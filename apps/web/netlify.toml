@@ -1,0 +1,8 @@
+# Netlify build config for the GridRight web app (monorepo: apps/web).
+# The Next.js runtime plugin handles server components, server actions,
+# and routing — no publish directory needed.
+[build]
+  command = "npm run build"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
