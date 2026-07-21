@@ -20,3 +20,9 @@ supabase/.branches/
 .claude/
 apps/api/*.egg-info/
 programs/gridright/json
+
+# Local Netlify folder
+.netlify
+# standalone-install artifact; CI uses the workspace root lockfile
+apps/web/package-lock.json
+deno.lock
