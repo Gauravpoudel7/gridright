@@ -1,0 +1,7 @@
+{
+  "extensions": ["ts"],
+  "node-option": ["import=tsx"],
+  "spec": ["tests/**/*.ts"],
+  "timeout": 120000,
+  "exit": true
+}

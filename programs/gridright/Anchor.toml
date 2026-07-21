@@ -1,0 +1,18 @@
+[toolchain]
+anchor_version = "0.32.1"
+
+[workspace]
+members = ["programs/gridright"]
+
+[programs.localnet]
+gridright = "88HxyoRrb9NzqWfk34SCoqHZcMFxmmHg6XVNpcVPxoFL"
+
+[programs.devnet]
+gridright = "88HxyoRrb9NzqWfk34SCoqHZcMFxmmHg6XVNpcVPxoFL"
+
+[provider]
+cluster = "Devnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "npm run test"

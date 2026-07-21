@@ -1,0 +1,24 @@
+{
+  "name": "gridright-anchor",
+  "private": true,
+  "scripts": {
+    "test": "anchor test",
+    "badge:setup-tree": "tsx scripts/setup-badge-tree.ts",
+    "badge:mint": "tsx scripts/mint-badge.ts"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@metaplex-foundation/mpl-bubblegum": "^5.0.2",
+    "@metaplex-foundation/umi": "^1.5.1",
+    "@metaplex-foundation/umi-bundle-defaults": "^1.5.1"
+  },
+  "devDependencies": {
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10.0.10",
+    "chai": "^6.2.2",
+    "mocha": "^11.7.6",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  }
+}

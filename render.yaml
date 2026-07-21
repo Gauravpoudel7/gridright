@@ -1,0 +1,31 @@
+# Render Blueprint — creates the GridRight API as a free-tier web service.
+# In the Render dashboard: New → Blueprint → pick this repo, and the service
+# below is created with these settings. Values marked `sync: false` are
+# prompted for (or set later) in the dashboard; SCHEDULER_TOKEN is generated
+# by Render — copy it from the service's Environment tab into cron-job.org.
+services:
+  - type: web
+    name: gridright-api
+    runtime: python
+    plan: free
+    rootDir: apps/api
+    buildCommand: pip install .
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: WEATHER_PROVIDER
+        value: open-meteo
+      - key: SCHEDULER_TOKEN
+        generateValue: true
+      - key: SUPABASE_URL
+        sync: false # hosted Supabase project URL (https://<ref>.supabase.co)
+      - key: SUPABASE_SERVICE_KEY
+        sync: false # service-role key from Supabase → Settings → API
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false # Vercel production URL, e.g. https://gridright.vercel.app
+      - key: CORS_ALLOWED_ORIGIN_REGEX
+        sync: false # optional preview pattern, e.g. https://gridright-.*\.vercel\.app
+      # Optional — only needed if badges / on-chain commits / Groq are enabled:
+      # BADGE_TREE_ADDRESS, COMMIT_AUTHORITY_PUBKEY, GROQ_API_KEY
