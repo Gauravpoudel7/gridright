@@ -62,6 +62,7 @@ from app.services import meter_binding as meter_binding_service
 from app.services import wallet_activation as wallet_activation_service
 from app.services import password_gate as password_gate_service
 from app.services import settlement_cycle as settlement_cycle_service
+from app.services import meter_aggregation as meter_aggregation_service
 
 router = APIRouter(prefix="/api/v1")
 
@@ -830,8 +831,20 @@ async def run_settlements(
     """Run one settlement cycle. Fired every 30 minutes by the external
     scheduler bearing SCHEDULER_TOKEN (same pattern as /forecasts/run), or
     manually by an operator. Idempotent-safe: an empty cycle creates nothing;
-    re-running early just rolls the window forward."""
-    return await settlement_cycle_service.run_settlement_cycle()
+    re-running early just rolls the window forward.
+
+    Sweeps unaggregated meter readings into contributions FIRST, so surplus
+    pushed by meters since the last run is priced and included in this batch.
+    """
+    try:
+        aggregation = await meter_aggregation_service.run_aggregation()
+    except Exception:
+        # The sweep failing must not block payouts of already-priced
+        # contributions; unswept readings are retried next cycle.
+        logger.exception("Meter aggregation sweep failed")
+        aggregation = {"error": "aggregation_failed"}
+    cycle = await settlement_cycle_service.run_settlement_cycle()
+    return {**cycle, "meter_aggregation": aggregation}
 
 
 @router.get("/operator/settlements")

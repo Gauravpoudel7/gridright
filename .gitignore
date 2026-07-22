@@ -26,3 +26,4 @@ programs/gridright/json
 # standalone-install artifact; CI uses the workspace root lockfile
 apps/web/package-lock.json
 deno.lock
+x_credentials
