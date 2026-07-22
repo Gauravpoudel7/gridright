@@ -123,8 +123,16 @@ class SMTPEmailer(Emailer):
         password = os.getenv("SMTP_PASS")
 
         def _send() -> None:
-            with smtplib.SMTP(host, port) as server:
-                server.starttls()
+            # Hard timeout: a wrong host/port must fail fast, not hang the
+            # approve request until the platform kills it. Port 465 is
+            # implicit-TLS (SMTP_SSL); 587 is STARTTLS.
+            if port == 465:
+                server_cls, use_starttls = smtplib.SMTP_SSL, False
+            else:
+                server_cls, use_starttls = smtplib.SMTP, True
+            with server_cls(host, port, timeout=15) as server:
+                if use_starttls:
+                    server.starttls()
                 if user and password:
                     server.login(user, password)
                 server.send_message(msg)

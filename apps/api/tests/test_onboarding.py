@@ -380,7 +380,7 @@ async def test_smtp_emailer_send_never_logs_password(caplog, monkeypatch):
     sent_messages = []
 
     class _StubSMTP:
-        def __init__(self, host, port):
+        def __init__(self, host, port, timeout=None):
             pass
         def __enter__(self):
             return self
