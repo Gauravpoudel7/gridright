@@ -46,27 +46,36 @@ def build_challenge_message(nonce: str) -> str:
 def verify_signature(address: str, message: str, signature_b58: str) -> bool:
     """Verify an ed25519 signature over `message` by `address` (base58 pubkey).
 
-    Returns False on any malformed input rather than raising, so a bad payload
-    is a clean rejection. Signature is accepted as base58 (Phantom's
-    signMessage output) — callers may pass base64 too; we try both.
+    Accepts base64 (browser transport) or base58 (Solana convention).
+    Returns False on any malformed input rather than raising.
     """
-    try:
-        from solders.pubkey import Pubkey
-        from solders.signature import Signature
+    # Outside the try: a missing crypto dependency must be a loud 500 in the
+    # logs, not a silent "Signature verification failed" for every seller.
+    import base64 as _b64
+    from solders.pubkey import Pubkey
+    from solders.signature import Signature
 
+    try:
         pubkey = Pubkey.from_string(address)
         msg_bytes = message.encode("utf-8")
 
+        # Try base64 first (what the browser sends via btoa/Array.from).
         sig = None
-        # Phantom returns the signature as bytes; clients typically base58- or
-        # base64-encode it for transport. Try base58 first (Solana convention).
-        try:
-            sig = Signature.from_string(signature_b58)
-        except Exception:
-            import base64
+        for decode in (
+            lambda s: _b64.b64decode(s + "=" * (-len(s) % 4)),  # standard b64
+            lambda s: _b64.urlsafe_b64decode(s + "=" * (-len(s) % 4)),  # url-safe b64
+        ):
+            try:
+                raw = decode(signature_b58)
+                if len(raw) == 64:
+                    sig = Signature.from_bytes(raw)
+                    break
+            except Exception:
+                continue
 
-            raw = base64.b64decode(signature_b58)
-            sig = Signature.from_bytes(raw)
+        # Fall back to base58 (Solana native).
+        if sig is None:
+            sig = Signature.from_string(signature_b58)
 
         return sig.verify(pubkey, msg_bytes)
     except Exception:
