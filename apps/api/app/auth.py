@@ -181,19 +181,17 @@ def get_user_from_token(token: str) -> UserProfile:
     """Verify a bearer token and return the caller's profile.
 
     Role is read from (in priority order):
-      1. app_metadata.role  (set by operator via admin API)
-      2. user_metadata.role (set by signup or profile update)
-      3. The legacy `role` claim (Supabase's built-in role —
-         typically "authenticated" or "anon", not app-specific)
+      1. app_metadata.role — set server-side only (admin API / signup trigger,
+         see migration 000014). NOT user_metadata: users can edit their own
+         user_metadata via auth.updateUser, so a role there would be a
+         privilege-escalation vector.
+      2. The legacy `role` claim (Supabase's built-in role — typically
+         "authenticated" or "anon", never an app role; also used by the test
+         suite's minted tokens).
     """
     claims = get_verifier().verify(token)
     app_meta = claims.get("app_metadata") or {}
-    user_meta = claims.get("user_metadata") or {}
-    role = str(
-        app_meta.get("role")
-        or user_meta.get("role")
-        or claims.get("role", "")
-    )
+    role = str(app_meta.get("role") or claims.get("role", ""))
     return UserProfile(
         id=str(claims["sub"]),
         role=role,

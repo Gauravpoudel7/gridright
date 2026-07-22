@@ -233,6 +233,9 @@ class SupabaseApplicationStore(ApplicationStore):
                 "password": temp_password,
                 "email_confirm": True,
                 "user_metadata": {"must_change_password": True},
+                # app_metadata lands in JWT claims — the API's per-route role
+                # checks (get_seller_user etc.) read app_metadata.role.
+                "app_metadata": {"role": "seller"},
             }
         )
         user = getattr(resp, "user", None) or resp
