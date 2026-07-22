@@ -23,10 +23,10 @@ export default function SellerLoginPage() {
         <p className="mt-6 text-sm text-zinc-600 dark:text-zinc-400">
           New here?{" "}
           <Link
-            href="/signup"
+            href="/apply"
             className="font-medium text-zinc-900 underline dark:text-zinc-50"
           >
-            Create a seller account
+            Apply to become a seller
           </Link>
         </p>
         <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
