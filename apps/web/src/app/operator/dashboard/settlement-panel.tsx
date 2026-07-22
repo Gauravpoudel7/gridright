@@ -164,7 +164,7 @@ export function SettlementPanel({
             {" · "}
             {unpaid.length} of {items.length} unpaid
           </p>
-          <ul className="flex flex-col gap-3">
+          <ul className="flex max-h-80 flex-col gap-3 overflow-y-auto">
             {items.map((item) => (
               <li
                 key={item.id}

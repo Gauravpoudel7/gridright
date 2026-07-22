@@ -64,7 +64,7 @@ export function SellerDashboardClient({
         {history.length === 0 ? (
           <p className="text-sm text-zinc-500">No contributions yet.</p>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="max-h-72 overflow-y-auto overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-zinc-200 text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">

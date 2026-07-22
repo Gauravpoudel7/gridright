@@ -140,7 +140,7 @@ export function ApplicationsReview({
   }
 
   return (
-    <ul className="flex flex-col gap-4">
+    <ul className="flex max-h-[32rem] flex-col gap-4 overflow-y-auto">
       {apps.map((app) => (
         <li
           key={app.id}
