@@ -257,6 +257,47 @@ def test_list_operator_only(client, store):
     assert resp.status_code == 403
 
 
+@pytest.mark.asyncio
+async def test_approve_duplicate_email_maps_to_409(store):
+    """auth-user creation failing with 'already registered' surfaces as a
+    clear 409 conflict, and the application stays reviewable."""
+    class DuplicateEmailStore(DictApplicationStore):
+        async def create_auth_seller(self, email, temp_password):
+            raise Exception("A user with this email address has already been registered")
+
+    dup = DuplicateEmailStore()
+    onboarding.set_store(dup)
+    row = await onboarding.submit_application(
+        full_name="Ada Lovelace", dob="1990-12-10",
+        ownership_doc_url="https://docs.example/deed.pdf",
+        gmail="taken@gmail.com", location_text="12 Analytical Ave",
+    )
+    with pytest.raises(onboarding.ApplicationError) as exc:
+        await onboarding.approve_application(row["id"], "pool-1")
+    assert exc.value.status_code == 409
+    assert "already exists" in exc.value.detail
+    assert dup.apps[row["id"]]["application_status"] == "submitted"
+
+
+@pytest.mark.asyncio
+async def test_approve_other_auth_failure_maps_to_502(store):
+    class BrokenAuthStore(DictApplicationStore):
+        async def create_auth_seller(self, email, temp_password):
+            raise Exception("connection reset by peer")
+
+    broken = BrokenAuthStore()
+    onboarding.set_store(broken)
+    row = await onboarding.submit_application(
+        full_name="Ada Lovelace", dob="1990-12-10",
+        ownership_doc_url="https://docs.example/deed.pdf",
+        gmail="ada@gmail.com", location_text="12 Analytical Ave",
+    )
+    with pytest.raises(onboarding.ApplicationError) as exc:
+        await onboarding.approve_application(row["id"], "pool-1")
+    assert exc.value.status_code == 502
+    assert broken.apps[row["id"]]["application_status"] == "submitted"
+
+
 # --- Email transport selection + temp-password hygiene (spec §4) ------------
 
 def test_emailer_factory_fails_loud_when_unconfigured(monkeypatch):

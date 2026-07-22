@@ -398,7 +398,28 @@ async def approve_application(
         )
 
     temp_password = generate_temp_password()
-    profile_id = await store.create_auth_seller(app["gmail"], temp_password)
+    try:
+        profile_id = await store.create_auth_seller(app["gmail"], temp_password)
+    except Exception as exc:
+        # Most common real-world failure: the applicant's email is already a
+        # registered auth user (e.g. they signed up directly before applying).
+        # Surface it as a clear conflict instead of an opaque 500; the
+        # application stays 'submitted' so the operator can reject with reason.
+        msg = str(exc).lower()
+        if "already" in msg and ("regist" in msg or "exist" in msg):
+            raise ApplicationError(
+                409,
+                f"A user with email {app['gmail']} already exists. "
+                "Reject this application or have the applicant use a "
+                "different email.",
+            )
+        logger.exception(
+            "Auth user creation failed for application %s", application_id
+        )
+        raise ApplicationError(
+            502, "Could not create the seller account; try again or check "
+                 "the auth service."
+        )
 
     # Assign the pool on both the profile and the application record.
     await store.set_profile_pool(profile_id, community_pool_id)
