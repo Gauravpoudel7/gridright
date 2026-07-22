@@ -10,6 +10,7 @@ from app.auth import (
     UserProfile,
     get_current_user,
     get_operator_user,
+    get_password_changed_seller,
     get_scheduler_or_operator_user,
     get_seller_user,
 )
@@ -56,6 +57,11 @@ from app.services.forecast import (
 )
 from app.services.recommender import FleetContext
 from app.services.fleet import get_fleet_outlook, get_net_position_kwh
+from app.services import onboarding as onboarding_service
+from app.services import meter_binding as meter_binding_service
+from app.services import wallet_activation as wallet_activation_service
+from app.services import password_gate as password_gate_service
+from app.services import settlement_cycle as settlement_cycle_service
 
 router = APIRouter(prefix="/api/v1")
 
@@ -610,6 +616,247 @@ async def verify_contribution_endpoint(
     day = datetime.fromisoformat(decided_at.replace("Z", "+00:00")).date()
     result = await verify_contribution(record_id, hex_hash, day)
     return VerifyResponse(**result)
+
+
+# --- Seller onboarding: identity application (spec §3.1) ---
+# Public submit/status/resubmit (applicant has no auth user until approval);
+# operator review endpoints are operator-gated.
+
+class ApplicationSubmitRequest(BaseModel):
+    full_name: str
+    dob: str  # ISO date
+    ownership_doc_url: str
+    gmail: str
+    location_text: str
+
+
+class ApplicationResubmitRequest(BaseModel):
+    edit_token: str
+    full_name: str | None = None
+    dob: str | None = None
+    ownership_doc_url: str | None = None
+    gmail: str | None = None
+    location_text: str | None = None
+
+
+class ApproveApplicationRequest(BaseModel):
+    community_pool_id: str
+
+
+class RejectApplicationRequest(BaseModel):
+    reason: str
+
+
+@router.post("/applications", status_code=201)
+async def submit_application(req: ApplicationSubmitRequest):
+    """Public: submit a seller identity application. Returns the one-time
+    edit token — the applicant needs it to check status / resubmit."""
+    try:
+        row = await onboarding_service.submit_application(
+            full_name=req.full_name,
+            dob=req.dob,
+            ownership_doc_url=req.ownership_doc_url,
+            gmail=req.gmail,
+            location_text=req.location_text,
+        )
+    except onboarding_service.ApplicationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    return {
+        "id": row["id"],
+        "application_status": row["application_status"],
+        "edit_token": row["edit_token"],
+    }
+
+
+@router.get("/applications/{application_id}/status")
+async def application_status(application_id: str, edit_token: str):
+    """Public (token-gated): applicant checks their application status."""
+    try:
+        return await onboarding_service.get_status(application_id, edit_token)
+    except onboarding_service.ApplicationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+@router.put("/applications/{application_id}")
+async def resubmit_application(
+    application_id: str, req: ApplicationResubmitRequest
+):
+    """Public (token-gated): resubmit a rejected application → submitted."""
+    try:
+        return await onboarding_service.resubmit_application(
+            application_id,
+            req.edit_token,
+            req.model_dump(exclude={"edit_token"}, exclude_none=True),
+        )
+    except onboarding_service.ApplicationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+@router.get("/operator/applications")
+async def operator_list_applications(
+    _operator: UserProfile = Depends(get_operator_user),
+):
+    """Operator: pending (submitted) applications awaiting identity review."""
+    return await onboarding_service.list_pending_applications()
+
+
+@router.post("/operator/applications/{application_id}/approve")
+async def operator_approve_application(
+    application_id: str,
+    req: ApproveApplicationRequest,
+    _operator: UserProfile = Depends(get_operator_user),
+):
+    """Operator: approve identity, assign pool, create auth user + temp
+    password (emailed), set must_change_password."""
+    try:
+        return await onboarding_service.approve_application(
+            application_id, req.community_pool_id
+        )
+    except onboarding_service.ApplicationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+@router.post("/operator/applications/{application_id}/reject")
+async def operator_reject_application(
+    application_id: str,
+    req: RejectApplicationRequest,
+    _operator: UserProfile = Depends(get_operator_user),
+):
+    """Operator: reject with a reason; applicant may resubmit."""
+    try:
+        return await onboarding_service.reject_application(
+            application_id, req.reason
+        )
+    except onboarding_service.ApplicationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+# --- Password-change gate (spec §4) ---
+# Uses the plain seller dependency (NOT get_password_changed_seller) — this is
+# the one seller route reachable while must_change_password is true.
+
+class ChangePasswordRequest(BaseModel):
+    new_password: str
+
+
+@router.post("/sellers/me/change-password")
+async def change_password(
+    req: ChangePasswordRequest,
+    seller: UserProfile = Depends(get_seller_user),
+):
+    try:
+        await password_gate_service.change_password(seller.id, req.new_password)
+    except password_gate_service.PasswordChangeError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    return {"status": "ok", "must_change_password": False}
+
+
+# --- Meter binding (spec §3.2) --- gated behind the password change.
+
+class MeterBindingRequest(BaseModel):
+    pairing_code: str
+
+
+@router.get("/sellers/me/meter-binding")
+async def get_meter_binding(
+    seller: UserProfile = Depends(get_password_changed_seller),
+):
+    try:
+        return await meter_binding_service.get_binding(seller.id)
+    except meter_binding_service.MeterBindingError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+@router.post("/sellers/me/meter-binding")
+async def submit_meter_binding(
+    req: MeterBindingRequest,
+    seller: UserProfile = Depends(get_password_changed_seller),
+):
+    """Submit a pairing code to bind the seller's meter (spec §3.2)."""
+    try:
+        return await meter_binding_service.submit_pairing_code(
+            seller.id, req.pairing_code
+        )
+    except meter_binding_service.MeterBindingError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+# --- Wallet activation via signed challenge (spec §3.3) --- gated.
+
+class WalletVerifyRequest(BaseModel):
+    address: str
+    nonce: str
+    signature: str
+
+
+@router.post("/sellers/me/wallet/challenge")
+async def wallet_challenge(
+    seller: UserProfile = Depends(get_password_changed_seller),
+):
+    """Issue a single-use nonce for the wallet to sign."""
+    try:
+        return await wallet_activation_service.issue_challenge(seller.id)
+    except wallet_activation_service.WalletActivationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+@router.post("/sellers/me/wallet/verify")
+async def wallet_verify(
+    req: WalletVerifyRequest,
+    seller: UserProfile = Depends(get_password_changed_seller),
+):
+    """Verify a signed challenge and connect/update the wallet (spec §3.3)."""
+    try:
+        return await wallet_activation_service.verify_and_connect(
+            seller.id, req.address, req.nonce, req.signature
+        )
+    except wallet_activation_service.WalletActivationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+# --- 30-minute settlement cycles ---
+# Batches decision-settled, unpaid contributions into per-seller payouts every
+# 30 minutes. Missed-deadline rule: unpaid payouts roll forward (+1 miss),
+# escalating at 3 consecutive misses. See services/settlement_cycle.py.
+
+class SettlementPaidRequest(BaseModel):
+    tx_signature: str
+
+
+@router.post("/settlements/run")
+async def run_settlements(
+    _operator: UserProfile = Depends(get_scheduler_or_operator_user),
+):
+    """Run one settlement cycle. Fired every 30 minutes by the external
+    scheduler bearing SCHEDULER_TOKEN (same pattern as /forecasts/run), or
+    manually by an operator. Idempotent-safe: an empty cycle creates nothing;
+    re-running early just rolls the window forward."""
+    return await settlement_cycle_service.run_settlement_cycle()
+
+
+@router.get("/operator/settlements")
+async def operator_settlements(
+    _operator: UserProfile = Depends(get_operator_user),
+):
+    """Current due batch + per-seller payout lines for the dashboard."""
+    return await settlement_cycle_service.get_due_settlements()
+
+
+@router.post("/operator/settlements/items/{item_id}/paid")
+async def settlement_item_paid(
+    item_id: str,
+    req: SettlementPaidRequest,
+    _operator: UserProfile = Depends(get_operator_user),
+):
+    """Record the on-chain payment for one payout line. The operator pays via
+    Phantom client-side; this endpoint records the resulting tx signature and
+    completes the batch when the last line is paid."""
+    try:
+        return await settlement_cycle_service.record_item_paid(
+            item_id, req.tx_signature
+        )
+    except settlement_cycle_service.SettlementCycleError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 
 async def auth_error_handler(request: Request, exc: AuthError) -> JSONResponse:

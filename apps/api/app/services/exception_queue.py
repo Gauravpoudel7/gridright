@@ -65,6 +65,27 @@ class SupabaseReviewStore(ReviewStore):
             os.environ["SUPABASE_SERVICE_KEY"],
         )
 
+    def _current_wallet(self, seller_id: str) -> str | None:
+        """Snapshot the seller's wallet at decision/insert time.
+
+        Onboarding spec §3.3: a wallet change applies from the NEXT settlement
+        cycle only. Stamping payout_wallet on the row at creation means a later
+        profile wallet change never affects a settlement already in flight.
+        Best-effort — a lookup failure leaves the column null rather than
+        failing the insert.
+        """
+        try:
+            res = (
+                self._client.table("profiles")
+                .select("wallet_address")
+                .eq("id", seller_id)
+                .limit(1)
+                .execute()
+            )
+            return res.data[0].get("wallet_address") if res.data else None
+        except Exception:
+            return None
+
     async def add_pending_review(
         self,
         seller_id: str,
@@ -94,6 +115,8 @@ class SupabaseReviewStore(ReviewStore):
             # Stored now so the decision_hash computed at resolve time uses
             # the model that actually made the recommendation.
             "model_version": model_version,
+            # Snapshot the payout wallet at creation (spec §3.3).
+            "payout_wallet": self._current_wallet(seller_id),
         }
         result = self._client.table("contributions").insert(payload).execute()
         return result.data[0]["id"]
@@ -126,6 +149,8 @@ class SupabaseReviewStore(ReviewStore):
             "direction": direction,
             "model_version": model_version,
             "decided_at": decided_at,
+            # Snapshot the payout wallet at the decision moment (spec §3.3).
+            "payout_wallet": self._current_wallet(seller_id),
             "decision_hash": decision_hash(
                 record_id=record_id,
                 seller_id=seller_id,

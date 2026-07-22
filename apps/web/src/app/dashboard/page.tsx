@@ -7,6 +7,8 @@ import { getCurrentUser } from "@/lib/supabase/get-current-user";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { SellerDashboardClient } from "./seller-dashboard-client";
 import { MeterSection } from "@/components/meter-section";
+import { MeterBindingSection } from "@/components/meter-binding-section";
+import { WalletActivate } from "@/components/wallet-activate";
 
 export const metadata = { title: "Seller dashboard — GridRight" };
 
@@ -51,6 +53,19 @@ const fetchMeter = cache(async () => {
   return res.json();
 });
 
+const fetchBinding = cache(async () => {
+  const supabase = await createSupabaseServerClient();
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  if (!token) return { meter_binding_status: "unbound", meter_id: null };
+  const res = await fetch(`${API_BASE}/api/v1/sellers/me/meter-binding`, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  if (!res.ok) return { meter_binding_status: "unbound", meter_id: null };
+  return res.json();
+});
+
 export default async function SellerDashboardPage() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
@@ -59,11 +74,16 @@ export default async function SellerDashboardPage() {
   const supabase = await createSupabaseServerClient();
   const { data: profile } = await supabase
     .from("profiles")
-    .select("wallet_address")
+    .select("wallet_address, meter_binding_status, meter_id, wallet_status")
     .eq("id", user.id)
     .single();
 
-  const [dashboard, history, meter] = await Promise.all([fetchDashboard(), fetchHistory(), fetchMeter()]);
+  const [dashboard, history, meter, binding] = await Promise.all([
+    fetchDashboard(),
+    fetchHistory(),
+    fetchMeter(),
+    fetchBinding(),
+  ]);
 
   return (
     <div className="mx-auto w-full max-w-4xl px-6 py-12">
@@ -83,6 +103,16 @@ export default async function SellerDashboardPage() {
         sellerId={user.id}
         initialDevice={meter.device ?? null}
         initialReadings={meter.readings ?? []}
+      />
+
+      <MeterBindingSection
+        initialStatus={binding.meter_binding_status ?? "unbound"}
+        initialMeterId={binding.meter_id ?? null}
+      />
+
+      <WalletActivate
+        initialStatus={profile?.wallet_status ?? "not_connected"}
+        initialAddress={profile?.wallet_address ?? null}
       />
 
       <SellerDashboardClient

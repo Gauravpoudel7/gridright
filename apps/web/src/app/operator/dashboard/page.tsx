@@ -8,6 +8,8 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { ReviewControls } from "./review-controls";
 import { OperatorFeedClient } from "./operator-feed-client";
 import { FleetOutlook, EMPTY_FLEET, type FleetOutlookData } from "./fleet-outlook";
+import { ApplicationsReview } from "./applications-review";
+import { SettlementPanel } from "./settlement-panel";
 
 export const metadata = { title: "Operator dashboard — GridRight" };
 
@@ -64,14 +66,25 @@ export default async function OperatorDashboardPage() {
     .eq("id", user.id)
     .single();
 
-  const [feed, pendingReviews, pool, distribution, stats, fleet] = await Promise.all([
-    apiGet<any[]>("/api/v1/operator/feed", []),
-    apiGet<any[]>("/api/v1/reviews/pending", []),
-    apiGet<any>("/api/v1/operator/pool", { total_kwh_contributed: 0, current_absorption_kwh: 0, absorption_limit_kwh: 0, pending_import_export: [] }),
-    apiGet<any[]>("/api/v1/operator/distribution", []),
-    apiGet<any>("/api/v1/operator/stats", { total_kwh_settled: 0, total_payouts: 0, total_spread_captured: 0, average_uplift_percentage: 0, feed_in_tariff_reference: 0, settled_count: 0 }),
-    apiGet<FleetOutlookData>("/api/v1/operator/fleet", EMPTY_FLEET),
-  ]);
+  const [feed, pendingReviews, pool, distribution, stats, fleet, applications, poolsRes, settlements] =
+    await Promise.all([
+      apiGet<any[]>("/api/v1/operator/feed", []),
+      apiGet<any[]>("/api/v1/reviews/pending", []),
+      apiGet<any>("/api/v1/operator/pool", { total_kwh_contributed: 0, current_absorption_kwh: 0, absorption_limit_kwh: 0, pending_import_export: [] }),
+      apiGet<any[]>("/api/v1/operator/distribution", []),
+      apiGet<any>("/api/v1/operator/stats", { total_kwh_settled: 0, total_payouts: 0, total_spread_captured: 0, average_uplift_percentage: 0, feed_in_tariff_reference: 0, settled_count: 0 }),
+      apiGet<FleetOutlookData>("/api/v1/operator/fleet", EMPTY_FLEET),
+      apiGet<any[]>("/api/v1/operator/applications", []),
+      supabase.from("community_pool").select("id"),
+      apiGet<any>("/api/v1/operator/settlements", { batch: null, items: [] }),
+    ]);
+
+  // community_pool has no name column in the Phase 1 schema — label pools by a
+  // short id slice so the operator can still pick one.
+  const pools = (poolsRes.data ?? []).map((p: { id: string }) => ({
+    id: p.id,
+    name: `Pool ${p.id.slice(0, 8)}`,
+  }));
 
   const pricingExceptions = pendingReviews.filter((r: any) => r.direction === "local_pool");
 
@@ -95,6 +108,18 @@ export default async function OperatorDashboardPage() {
         {statCard("Settled energy", fmt(stats.total_kwh_settled), "kWh")}
         {statCard("Total payouts", `$${fmt(stats.total_payouts)}`, "")}
       </div>
+
+      {/* 30-minute settlement cycle — payouts due this cycle */}
+      <SettlementPanel batch={settlements.batch} initialItems={settlements.items ?? []} />
+
+      {/* Identity review — pending seller applications */}
+      <section className="mb-8 rounded-lg border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-950">
+        <h2 className="mb-1 text-lg font-semibold text-zinc-900 dark:text-zinc-50">Identity review</h2>
+        <p className="mb-4 text-sm text-zinc-600 dark:text-zinc-400">
+          Pending seller applications. On approve, the seller receives login credentials by email.
+        </p>
+        <ApplicationsReview initialApplications={applications} pools={pools} />
+      </section>
 
       {/* Fleet outlook (Phase 4) */}
       <FleetOutlook data={fleet} />

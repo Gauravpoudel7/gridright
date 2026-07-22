@@ -261,6 +261,35 @@ async def get_seller_user(
     return user
 
 
+async def get_password_changed_seller(
+    authorization: str | None = Header(default=None),
+) -> UserProfile:
+    """FastAPI dependency: an authenticated seller who has changed their
+    temporary password.
+
+    This is the server-side enforcement of the password-change gate (spec §4):
+    a seller with `must_change_password = true` is blocked from EVERY seller
+    route except the password-change endpoint itself (which uses the plain
+    `get_seller_user` dependency). A direct API call while the flag is set gets
+    403 — the client-side redirect in proxy.ts is a convenience, not the
+    authority.
+
+    Delegates to the password_gate service, whose store is swappable: in test
+    mode with no injected store the gate is open (matching the testing
+    convention); the dedicated gate tests inject an in-memory store to
+    exercise the real check.
+    """
+    user = await get_seller_user(authorization)
+    from app.services.password_gate import must_change_password
+
+    if await must_change_password(user.id):
+        raise AuthError(
+            status.HTTP_403_FORBIDDEN,
+            "You must change your temporary password before continuing.",
+        )
+    return user
+
+
 # --- helpers used by tests --------------------------------------------------
 
 def mint_test_token(

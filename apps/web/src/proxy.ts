@@ -53,14 +53,17 @@ export async function proxy(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const role: Role | null = user
+  // Fetch role + must_change_password together — the gate below needs both.
+  const profile = user
     ? ((await supabase
         .from("profiles")
-        .select("role")
+        .select("role, must_change_password")
         .eq("id", user.id)
         .single()
-        .then((r) => r.data?.role as Role | undefined)) ?? null)
+        .then((r) => r.data as { role: Role; must_change_password: boolean } | null)) ??
+      null)
     : null;
+  const role: Role | null = profile?.role ?? null;
 
   const pathname = request.nextUrl.pathname;
 
@@ -83,6 +86,23 @@ export async function proxy(request: NextRequest) {
     if (role === "operator") {
       return redirectTo(request, "/operator/login?error=not_seller");
     }
+    // Password-change gate (spec §4): a seller issued a temporary password
+    // must change it before any dashboard route. This redirect is a UX
+    // convenience — the FastAPI backend independently rejects every gated
+    // seller endpoint while must_change_password is true, so a client that
+    // skips this still can't act.
+    if (role === "seller" && profile?.must_change_password) {
+      return redirectTo(request, "/change-password");
+    }
+    return response;
+  }
+
+  // Force the password change before the seller can leave /change-password for
+  // anywhere else that matters — but never loop the page onto itself.
+  if (pathname.startsWith("/change-password")) {
+    if (!user) {
+      return redirectTo(request, "/login");
+    }
     return response;
   }
 
@@ -99,5 +119,6 @@ export const config = {
   matcher: [
     "/dashboard/:path*",
     "/operator/dashboard/:path*",
+    "/change-password",
   ],
 };
