@@ -118,7 +118,6 @@ export default async function SellerDashboardPage() {
       <SellerDashboardClient
         initialDashboard={dashboard}
         initialHistory={history}
-        savedWalletAddress={profile?.wallet_address ?? null}
       />
 
       <div className="mt-4 flex justify-end">

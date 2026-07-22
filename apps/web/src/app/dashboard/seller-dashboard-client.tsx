@@ -1,8 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { WalletConnect } from "@/components/wallet-connect";
-import { useWallet } from "@solana/wallet-adapter-react";
 import { useRealtimeHistory, LiveDot } from "@/components/realtime-dashboard";
 
 type HistoryItem = {
@@ -36,45 +33,19 @@ function statCard(label: string, value: string, unit: string) {
   );
 }
 
+// Wallet connection lives in WalletActivate (payout wallet with signed-
+// challenge ownership proof) — this component only renders stats + history.
 export function SellerDashboardClient({
   initialDashboard,
   initialHistory,
-  savedWalletAddress,
 }: {
   initialDashboard: DashboardData;
   initialHistory: HistoryItem[];
-  savedWalletAddress: string | null;
 }) {
-  const { publicKey, connected } = useWallet();
   const { history, live } = useRealtimeHistory(initialHistory);
-  const [walletSaved, setWalletSaved] = useState(!!savedWalletAddress);
-
-  useEffect(() => {
-    if (connected && publicKey) setWalletSaved(true);
-  }, [connected, publicKey]);
-
-  const walletOk = walletSaved || (connected && !!publicKey);
 
   return (
     <div>
-      {/* Wallet connect row */}
-      <div className="mb-6 flex items-center justify-between rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-        <div>
-          <p className="text-sm font-medium text-zinc-900 dark:text-zinc-50">Phantom wallet</p>
-          {savedWalletAddress && !connected && (
-            <p className="font-mono text-xs text-zinc-500">
-              Saved: {savedWalletAddress.slice(0, 4)}…{savedWalletAddress.slice(-4)}
-            </p>
-          )}
-          {!walletOk && (
-            <p className="text-xs text-amber-600 dark:text-amber-400">
-              Connect a wallet to list surplus
-            </p>
-          )}
-        </div>
-        <WalletConnect />
-      </div>
-
       {/* Stats */}
       <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
         {statCard("Surplus this period", fmt(initialDashboard.surplus_this_period), "kWh")}

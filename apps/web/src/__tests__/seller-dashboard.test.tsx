@@ -136,6 +136,18 @@ describe("SellerDashboardPage", () => {
     expect(screen.getByText("Total earned")).toBeInTheDocument();
   });
 
+  it("shows only the payout wallet section — legacy Phantom row is gone", async () => {
+    await setupMocks(mockSellerUser());
+    const element = await SellerDashboardPage();
+    render(element);
+
+    // The signed-challenge payout wallet (WalletActivate) is the single
+    // wallet UI; the old unverified "Phantom wallet" row was removed.
+    expect(screen.getByText("Payout wallet")).toBeInTheDocument();
+    expect(screen.queryByText("Phantom wallet")).not.toBeInTheDocument();
+    expect(screen.queryByText(/connect a wallet to list surplus/i)).not.toBeInTheDocument();
+  });
+
   it("renders history table rows", async () => {
     await setupMocks(mockSellerUser());
     const element = await SellerDashboardPage();
