@@ -234,3 +234,164 @@ const es=new EventSource('/events');
 es.onmessage=e=>{try{onReading(JSON.parse(e.data))}catch(_){}};
 es.onerror=()=>{$('conn-status').textContent='RECONNECTING';$('conn-status').style.color='#886600'};
 </script></body></html>"""
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _solar_factor(t: datetime) -> float:
+    hour = t.hour + t.minute / 60.0
+    if hour < 6 or hour > 20:
+        return 0.0
+    return max(0.0, math.sin(math.pi * (hour - 6) / 14.0))
+
+
+def make_reading(meter_id: str) -> dict:
+    now = datetime.now(timezone.utc)
+    factor = _solar_factor(now)
+    noise = lambda: random.uniform(0.85, 1.15)
+    generation  = round(GEN_BASE_KWH  * factor * noise(), 4)
+    consumption = round(CONS_BASE_KWH * noise(), 4)
+    grid_export = round(max(0.0, generation - consumption) * random.uniform(0.7, 0.95), 4)
+    return {
+        "meter_device_id": meter_id,
+        "reading_at": now.isoformat(),
+        "generation_kwh": generation,
+        "consumption_kwh": consumption,
+        "grid_export_kwh": grid_export,
+    }
+
+
+def push(api: str, token: str, reading: dict) -> tuple[int, str]:
+    body = json.dumps(reading).encode()
+    req = urllib.request.Request(
+        f"{api.rstrip('/')}/api/v1/meter-readings",
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status, resp.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
+    except Exception as exc:
+        return 0, str(exc)
+
+
+def _broadcast(event: dict) -> None:
+    data = ("data: " + json.dumps(event) + "\n\n").encode()
+    with _lock:
+        dead = []
+        for wfile in _sse_clients:
+            try:
+                wfile.write(data)
+                wfile.flush()
+            except Exception:
+                dead.append(wfile)
+        for w in dead:
+            _sse_clients.remove(w)
+
+
+# ── HTTP server ───────────────────────────────────────────────────────────────
+
+class _Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def do_GET(self):
+        if self.path == "/events":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            with _lock:
+                _sse_clients.append(self.wfile)
+                hist = list(_history)
+            for ev in hist:
+                try:
+                    self.wfile.write(("data: " + json.dumps(ev) + "\n\n").encode())
+                    self.wfile.flush()
+                except Exception:
+                    return
+            try:
+                while True:
+                    time.sleep(30)
+            except Exception:
+                pass
+        else:
+            html = _HTML.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html)))
+            self.end_headers()
+            self.wfile.write(html)
+
+
+def _run_server(port: int) -> None:
+    HTTPServer(("127.0.0.1", port), _Handler).serve_forever()
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="GridRight virtual meter sim")
+    parser.add_argument("--token",      default=os.getenv("GRIDRIGHT_DEVICE_TOKEN", ""))
+    parser.add_argument("--meter-id",   default=os.getenv("GRIDRIGHT_METER_ID", "METER-VSIM-001"))
+    parser.add_argument("--api",        default=os.getenv("GRIDRIGHT_API_URL", API_DEFAULT))
+    parser.add_argument("--interval",   type=int, default=60)
+    parser.add_argument("--port",       type=int, default=7777)
+    parser.add_argument("--once",       action="store_true")
+    parser.add_argument("--no-browser", action="store_true")
+    args = parser.parse_args()
+
+    if not args.token:
+        print("ERROR: provide --token or set GRIDRIGHT_DEVICE_TOKEN", file=sys.stderr)
+        print("  Bind the meter in the seller dashboard (pairing code: VSIM-001),", file=sys.stderr)
+        print("  copy the one-time device token, then re-run with --token <token>", file=sys.stderr)
+        sys.exit(1)
+
+    if not args.once:
+        threading.Thread(target=_run_server, args=(args.port,), daemon=True).start()
+        url = f"http://localhost:{args.port}"
+        print(f"Dashboard      : {url}")
+        if not args.no_browser:
+            threading.Timer(1.0, webbrowser.open, args=(url,)).start()
+
+    print(f"Virtual meter  : {args.meter_id}")
+    print(f"API            : {args.api}")
+    print(f"Interval       : {args.interval}s")
+    print(f"Token          : {args.token[:16]}...")
+    print()
+
+    while True:
+        reading = make_reading(args.meter_id)
+        status, body = push(args.api, args.token, reading)
+        ts = datetime.now().strftime("%H:%M:%S")
+        ok = status == 201
+        event = {
+            "meter_id": args.meter_id,
+            "ts": reading["reading_at"],
+            "gen": reading["generation_kwh"],
+            "cons": reading["consumption_kwh"],
+            "exp": reading["grid_export_kwh"],
+            "ok": ok,
+            "http": status,
+        }
+        if not args.once:
+            with _lock:
+                _history.append(event)
+            _broadcast(event)
+        if ok:
+            print(f"[{ts}] OK  gen={reading['generation_kwh']:.4f}  "
+                  f"cons={reading['consumption_kwh']:.4f}  "
+                  f"export={reading['grid_export_kwh']:.4f} kWh")
+        else:
+            print(f"[{ts}] ERR HTTP {status}: {body[:120]}")
+        if args.once:
+            break
+        time.sleep(args.interval)
+
+
+if __name__ == "__main__":
+    main()

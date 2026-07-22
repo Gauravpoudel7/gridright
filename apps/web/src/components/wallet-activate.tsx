@@ -62,8 +62,9 @@ export function WalletActivate({
       const signatureBytes = await signMessage(
         new TextEncoder().encode(challenge.message),
       );
-      // base64-encode for transport — the backend verifies base58 or base64.
-      const signature = btoa(String.fromCharCode(...signatureBytes));
+      // base64-encode for transport — spread on large Uint8Array is unsafe,
+      // use Array.from to iterate byte-by-byte.
+      const signature = btoa(Array.from(signatureBytes, (b) => String.fromCharCode(b)).join(""));
 
       const result = await verifyWalletSignatureAction(
         publicKey.toBase58(),
