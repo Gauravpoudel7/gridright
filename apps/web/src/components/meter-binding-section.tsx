@@ -42,6 +42,7 @@ export function MeterBindingSection({
 }) {
   const [status, setStatus] = useState<BindingStatus>(initialStatus);
   const [meterId, setMeterId] = useState<string | null>(initialMeterId);
+  const [deviceToken, setDeviceToken] = useState<string | null>(null);
 
   const [state, formAction, pending] = useActionState(
     async (_prev: MeterBindingResult, formData: FormData) => {
@@ -49,6 +50,7 @@ export function MeterBindingSection({
       if (r.ok && r.status) {
         setStatus(r.status as BindingStatus);
         if (r.meterId) setMeterId(r.meterId);
+        if (r.deviceToken) setDeviceToken(r.deviceToken);
       }
       return r;
     },
@@ -63,10 +65,18 @@ export function MeterBindingSection({
       </div>
 
       {status === "bound" ? (
-        <p className="text-sm text-zinc-700 dark:text-zinc-300">
-          Meter <span className="font-mono text-xs">{meterId}</span> is bound to your
-          account. This is permanent — a meter can only ever belong to one seller.
-        </p>
+        <>
+          <p className="text-sm text-zinc-700 dark:text-zinc-300">
+            Meter <span className="font-mono text-xs">{meterId}</span> is bound to your
+            account. This is permanent — a meter can only ever belong to one seller.
+          </p>
+          {deviceToken && (
+            <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-900/20 dark:text-amber-300">
+              Meter ingest token (shown once — your meter device uses it to push
+              readings): <code className="font-mono break-all">{deviceToken}</code>
+            </div>
+          )}
+        </>
       ) : (
         <>
           <p className="mb-4 text-sm text-zinc-600 dark:text-zinc-400">

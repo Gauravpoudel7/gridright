@@ -30,10 +30,12 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("MeterSection", () => {
-  it("shows the connect-your-meter empty state when no device is registered", () => {
+  it("points at meter binding in the empty state — no manual registration", () => {
     render(<MeterSection sellerId="seller-1" initialDevice={null} initialReadings={[]} />);
-    expect(screen.getByText(/Connect your smart meter/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Register meter" })).toBeInTheDocument();
+    expect(screen.getByText(/once your meter is bound/i)).toBeInTheDocument();
+    // The free-text device registration form is gone (superseded by
+    // pairing-code binding).
+    expect(screen.queryByRole("button", { name: "Register meter" })).not.toBeInTheDocument();
   });
 
   it("shows waiting state when device registered but zero readings", () => {

@@ -18,6 +18,8 @@ export type MeterBindingResult = {
   status?: string;
   meterId?: string | null;
   reason?: string | null;
+  /** One-time ingestion token for the bound meter (shown once). */
+  deviceToken?: string | null;
   error?: string;
 };
 
@@ -50,5 +52,6 @@ export async function submitPairingCodeAction(
     status: data.meter_binding_status,
     meterId: data.meter_id ?? null,
     reason: data.reason ?? null,
+    deviceToken: data.device_token ?? null,
   };
 }

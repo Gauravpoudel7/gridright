@@ -23,11 +23,14 @@ deterministic simulated impl when unset), mirroring the BadgeMinter pattern.
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Rate limit: at most this many exchange attempts per profile per window.
 RATE_LIMIT_MAX_ATTEMPTS = 5
@@ -339,4 +342,26 @@ async def submit_pairing_code(profile_id: str, pairing_code: str) -> dict[str, A
             "reason_code": "already_claimed",
         }
 
-    return {"meter_binding_status": "bound", "meter_id": result.meter_id}
+    # Bridge to ingestion: register the bound meter as the seller's device so
+    # /meter-readings can authenticate its pushes. The plaintext device token
+    # is returned exactly once (stored only as a hash) — in the real
+    # architecture the virtual-smart-meter service holds this credential; with
+    # the simulated client it's surfaced to the seller for their device/sim.
+    # Best-effort: a registration failure must not unwind a successful bind.
+    device_token = None
+    try:
+        from app.services import meter as meter_service
+
+        reg = await meter_service.register_device(profile_id, result.meter_id)
+        device_token = reg.get("device_token")
+    except Exception:
+        logger.exception(
+            "Device auto-registration failed after binding meter %s",
+            result.meter_id,
+        )
+
+    return {
+        "meter_binding_status": "bound",
+        "meter_id": result.meter_id,
+        "device_token": device_token,
+    }

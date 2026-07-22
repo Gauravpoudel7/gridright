@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRealtimeTable } from "@/hooks/use-realtime-table";
 import { LiveDot } from "@/components/realtime-dashboard";
-import { registerMeterDevice } from "@/app/actions/meter";
 
 export type MeterReading = {
   reading_at: string;
@@ -57,12 +56,12 @@ export function MeterSection({
   initialDevice: MeterDevice;
   initialReadings: MeterReading[];
 }) {
-  const [device, setDevice] = useState(initialDevice);
+  // Device registration happens automatically when the seller binds their
+  // meter with a pairing code (see MeterBindingSection) — this section only
+  // displays the live readings that arrive once the meter starts pushing.
+  const [device] = useState(initialDevice);
   // Keep oldest-first for charting; API returns newest-first.
   const [readings, setReadings] = useState<MeterReading[]>(() => [...initialReadings].reverse());
-  const [issuedToken, setIssuedToken] = useState<string | null>(null);
-  const [deviceIdInput, setDeviceIdInput] = useState("");
-  const [registerError, setRegisterError] = useState<string | null>(null);
 
   const { lastChange, live } = useRealtimeTable<MeterReading & { seller_id: string }>(
     "meter_readings",
@@ -82,41 +81,16 @@ export function MeterSection({
       .reduce((sum, r) => sum + num(r.grid_export_kwh), 0);
   }, [readings]);
 
-  async function register() {
-    setRegisterError(null);
-    const result = await registerMeterDevice(deviceIdInput.trim());
-    if (!result.ok) {
-      setRegisterError(result.error ?? "Registration failed. Try a different device ID.");
-      return;
-    }
-    setDevice({ meter_device_id: result.meterDeviceId! });
-    setIssuedToken(result.deviceToken ?? null);
-  }
-
-  // Empty state: no registered device yet.
+  // Empty state: no meter bound yet — binding (with a pairing code) is the
+  // only way to connect a meter; there is no manual device registration.
   if (!device) {
     return (
       <section className="mb-8 rounded-lg border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-950">
         <h2 className="mb-1 text-lg font-semibold text-zinc-900 dark:text-zinc-50">Smart meter</h2>
-        <p className="mb-4 text-sm text-zinc-600 dark:text-zinc-400">
-          Connect your smart meter to see live generation and surplus here.
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          Live generation and surplus will appear here once your meter is bound
+          (see Meter binding above) and starts sending readings.
         </p>
-        <div className="flex gap-2">
-          <input
-            value={deviceIdInput}
-            onChange={(e) => setDeviceIdInput(e.target.value)}
-            placeholder="Meter device ID (printed on the unit)"
-            className="w-72 rounded border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
-          />
-          <button
-            onClick={register}
-            disabled={!deviceIdInput.trim()}
-            className="rounded bg-zinc-900 px-4 py-1.5 text-sm font-medium text-zinc-50 hover:bg-zinc-700 disabled:opacity-40 dark:bg-zinc-50 dark:text-zinc-900"
-          >
-            Register meter
-          </button>
-        </div>
-        {registerError && <p className="mt-2 text-xs text-red-600">{registerError}</p>}
       </section>
     );
   }
@@ -131,16 +105,9 @@ export function MeterSection({
         <span className="font-mono text-xs text-zinc-500">{device.meter_device_id}</span>
       </div>
 
-      {issuedToken && (
-        <div className="mb-4 rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-900/20 dark:text-amber-300">
-          Device token (shown once — configure it on your meter now):{" "}
-          <code className="font-mono">{issuedToken}</code>
-        </div>
-      )}
-
       {readings.length === 0 ? (
         <p className="text-sm text-zinc-500">
-          Meter registered — waiting for the first reading.
+          Meter connected — waiting for the first reading.
         </p>
       ) : (
         <>

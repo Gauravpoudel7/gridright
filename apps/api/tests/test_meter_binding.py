@@ -259,3 +259,23 @@ def test_get_binding_status(client, store):
     resp = client.get("/api/v1/sellers/me/meter-binding", headers=AUTH)
     assert resp.status_code == 200
     assert resp.json() == {"meter_binding_status": "unbound", "meter_id": None}
+
+
+def test_successful_bind_auto_registers_ingest_device(client, store):
+    """Binding bridges to the readings pipeline: the bound meter is registered
+    as the seller's ingestion device and the one-time token is returned."""
+    from app.services import meter
+    from tests.test_meter import DictMeterStore
+
+    meter_store = DictMeterStore()
+    meter.set_store(meter_store)
+    try:
+        resp = bind(client, "GOODCODE-77")
+        body = resp.json()
+        assert body["meter_binding_status"] == "bound"
+        assert body["device_token"].startswith("gr_meter_")
+        device = meter_store.devices.get("METER-GOODCODE-77")
+        assert device is not None
+        assert device["seller_id"] == SELLER_ID
+    finally:
+        meter.set_store(None)

@@ -99,15 +99,15 @@ export default async function SellerDashboardPage() {
         </form>
       </header>
 
+      <MeterBindingSection
+        initialStatus={binding.meter_binding_status ?? "unbound"}
+        initialMeterId={binding.meter_id ?? null}
+      />
+
       <MeterSection
         sellerId={user.id}
         initialDevice={meter.device ?? null}
         initialReadings={meter.readings ?? []}
-      />
-
-      <MeterBindingSection
-        initialStatus={binding.meter_binding_status ?? "unbound"}
-        initialMeterId={binding.meter_id ?? null}
       />
 
       <WalletActivate
