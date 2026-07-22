@@ -13,6 +13,11 @@ Swept readings are flagged `aggregated` so surplus is never double-counted.
 Readings are marked aggregated even when the total export is zero (nothing to
 price) — they've been considered.
 
+Anti-noise threshold: a seller's accumulated export only goes to the operator
+once it reaches MIN_AGGREGATION_KWH. Below that, the readings are left unswept
+and keep accumulating across cycles — so the review queue holds one line per
+seller with MEANINGFUL surplus, not one per active seller per cycle.
+
 Store-ABC pattern as everywhere else (Supabase in prod, dict in tests).
 """
 from __future__ import annotations
@@ -40,6 +45,10 @@ from app.services.recommender import (
 )
 
 logger = logging.getLogger(__name__)
+
+# A seller's accumulated grid export must reach this before it is priced and
+# sent to the operator. Sub-threshold surplus carries forward to later cycles.
+MIN_AGGREGATION_KWH = 0.5
 
 # Same PLACEHOLDER policy the /recommend endpoint uses — one pricing policy,
 # two entry points.
@@ -120,11 +129,17 @@ def set_store(store: AggregationStore | None) -> None:
 
 async def run_aggregation() -> dict[str, Any]:
     """Sweep unaggregated readings into contributions. Returns a summary:
-    {readings, sellers, contributions, needs_review}."""
+    {readings, sellers, contributions, needs_review, carried_forward}."""
     store = _get_store()
     readings = await store.get_unaggregated()
     if not readings:
-        return {"readings": 0, "sellers": 0, "contributions": 0, "needs_review": 0}
+        return {
+            "readings": 0,
+            "sellers": 0,
+            "contributions": 0,
+            "needs_review": 0,
+            "carried_forward": 0,
+        }
 
     pool_row = await store.get_pool_state() or {}
     pool = PoolState(
@@ -155,12 +170,20 @@ async def run_aggregation() -> dict[str, Any]:
     now_time = datetime.now(timezone.utc).time().replace(second=0, microsecond=0)
     contributions = 0
     needs_review = 0
+    carried_forward = 0
 
     for seller_id, line in by_seller.items():
         total = round(line["total_kwh"], 6)
         if total <= 0:
             # Nothing exported — considered, nothing to price.
             await store.mark_aggregated(line["reading_ids"])
+            continue
+
+        if total < MIN_AGGREGATION_KWH:
+            # Real but sub-threshold surplus: leave the readings UNSWEPT so they
+            # keep accumulating across cycles and reach the operator only once
+            # they're worth a review-queue line. Nothing priced or marked now.
+            carried_forward += 1
             continue
 
         try:
@@ -215,4 +238,5 @@ async def run_aggregation() -> dict[str, Any]:
         "sellers": len(by_seller),
         "contributions": contributions,
         "needs_review": needs_review,
+        "carried_forward": carried_forward,
     }

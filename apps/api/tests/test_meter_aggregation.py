@@ -71,9 +71,9 @@ async def test_readings_become_review_queue_entries_per_seller(
     QUEUE (AI recommends, operator decides), one line per seller, with the
     summed kWh. On approve it becomes a settled contribution and the next
     settlement cycle batches it for payout."""
-    agg_store.seed_reading("s1", 0.10)
-    agg_store.seed_reading("s1", 0.15)
-    agg_store.seed_reading("s2", 0.30)
+    agg_store.seed_reading("s1", 0.30)
+    agg_store.seed_reading("s1", 0.25)
+    agg_store.seed_reading("s2", 0.60)
 
     summary = await run_aggregation()
 
@@ -83,8 +83,8 @@ async def test_readings_become_review_queue_entries_per_seller(
     assert summary["contributions"] == 0
 
     pending = {r["seller_id"]: r for r in _rows(review_store, "needs_review")}
-    assert pending["s1"]["kwh_contributed"] == pytest.approx(0.25)
-    assert pending["s2"]["kwh_contributed"] == pytest.approx(0.30)
+    assert pending["s1"]["kwh_contributed"] == pytest.approx(0.55)
+    assert pending["s2"]["kwh_contributed"] == pytest.approx(0.60)
     assert pending["s1"]["ai_recommended_price"] > 0
 
 
@@ -96,8 +96,40 @@ async def test_readings_swept_exactly_once(agg_store, review_store):
     summary = await run_aggregation()
     assert summary == {
         "readings": 0, "sellers": 0, "contributions": 0, "needs_review": 0,
+        "carried_forward": 0,
     }
     assert len(_rows(review_store, "needs_review")) == 1
+
+
+async def test_sub_threshold_surplus_carries_forward(agg_store, review_store):
+    """Below MIN_AGGREGATION_KWH a seller's export is real but too small to be
+    worth an operator review line. It must NOT be priced, queued, or swept —
+    the readings stay unaggregated and keep accruing until a later cycle pushes
+    the running total over the threshold, at which point it goes through in one
+    consolidated line."""
+    agg_store.seed_reading("s1", 0.20)
+    agg_store.seed_reading("s1", 0.15)  # running total 0.35 < 0.5
+
+    summary = await run_aggregation()
+
+    assert summary["sellers"] == 1
+    assert summary["needs_review"] == 0
+    assert summary["contributions"] == 0
+    assert summary["carried_forward"] == 1
+    # Left unswept so they accumulate — nothing reached the operator.
+    assert not any(r["aggregated"] for r in agg_store.readings.values())
+    assert review_store._reviews == {}
+
+    # Next cycle a new reading tips the running total over 0.5 → one line.
+    agg_store.seed_reading("s1", 0.30)  # total now 0.65 ≥ 0.5
+    summary = await run_aggregation()
+
+    assert summary["needs_review"] == 1
+    assert summary["carried_forward"] == 0
+    assert all(r["aggregated"] for r in agg_store.readings.values())
+    pending = _rows(review_store, "needs_review")
+    assert len(pending) == 1
+    assert pending[0]["kwh_contributed"] == pytest.approx(0.65)
 
 
 async def test_zero_export_marked_but_no_contribution(agg_store, review_store):
