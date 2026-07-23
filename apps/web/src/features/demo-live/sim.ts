@@ -22,7 +22,7 @@ const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 // uses. The real code picks `groq` when GROQ_API_KEY is set, else `rules`.
 // In /demo/live we don't call out to Groq, so the displayed model reflects
 // the same fallback the API would use in this environment.
-export const GROQ_MODEL_NAME = "mixtral-8x7b-32768";
+export const GROQ_MODEL_NAME = "openai/gpt-oss-120b";
 export const GROQ_MODEL_LABEL = `Groq / ${GROQ_MODEL_NAME}`;
 export const RULES_MODEL_LABEL = "Rules estimator (no GROQ_API_KEY)";
 
@@ -79,7 +79,7 @@ export type MeterReading = {
 export type AiTrace = {
   /** "groq" if GROQ_API_KEY were set (production path), "rules" otherwise. */
   modelUsed: "groq" | "rules";
-  /** Display label, e.g. "Groq / mixtral-8x7b-32768" or "Rules estimator". */
+  /** Display label, e.g. "Groq / openai/gpt-oss-120b" or "Rules estimator". */
   modelLabel: string;
   /** Pool + reading context that was passed to the model. */
   prompt: string;

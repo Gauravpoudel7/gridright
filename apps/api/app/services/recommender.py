@@ -1,12 +1,15 @@
 import os
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import time
 
 logger = logging.getLogger(__name__)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "mixtral-8x7b-32768")
+# mixtral-8x7b-32768 was decommissioned by Groq; llama-3.3-70b-versatile was
+# deprecated in the June 2026 wave. openai/gpt-oss-120b is Groq's current
+# recommended general-purpose production model. Override with GROQ_MODEL.
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 
 @dataclass
@@ -105,17 +108,35 @@ async def recommend(inp: RecommendationInput) -> RecommendationResult:
         from groq import AsyncGroq
 
         client = AsyncGroq(api_key=GROQ_API_KEY)
+        # Anchor the model on the deterministic rules result (computed WITHOUT
+        # the fleet nudge, which is applied once below). Giving the LLM this
+        # baseline plus pool utilisation lets it refine within a sane range
+        # instead of inventing a price from scratch — the failure mode that
+        # made the LLM path no better (and riskier) than the rules alone.
+        baseline = rules_estimator(replace(inp, fleet=None))
+        limit = inp.pool.absorption_limit_kwh or 1.0
+        utilization_pct = round(100 * inp.pool.current_absorption_kwh / limit, 1)
+        fleet_note = (
+            "no fleet outlook available"
+            if inp.fleet is None
+            else (
+                f"fleet expects a net {'shortfall' if inp.fleet.net_position_kwh < 0 else 'surplus'} "
+                f"of {abs(inp.fleet.net_position_kwh):.1f} kWh over the coming hours"
+            )
+        )
         prompt = (
-            f"Given a solar energy seller with {inp.seller_surplus_kwh} kWh surplus "
-            f"at {inp.time_of_day.isoformat('minutes')}, "
-            f"pool currently absorbing {inp.pool.current_absorption_kwh} kWh "
-            f"with a limit of {inp.pool.absorption_limit_kwh} kWh, "
-            f"and community consuming {inp.pool.current_consumption_kwh} kWh, "
-            f"determine the direction: "
-            f"'local_pool' (surplus absorbed by community), "
-            f"'import' (shortfall — community consumes more than pool has), "
-            f"or 'export' (surplus exceeds pool capacity). "
-            f"Recommend a sell price (in $/kWh) and how much of the surplus the pool should absorb. "
+            f"You price surplus solar for a community energy pool. "
+            f"Seller surplus: {inp.seller_surplus_kwh} kWh at {inp.time_of_day.isoformat('minutes')}. "
+            f"Pool absorbing {inp.pool.current_absorption_kwh} kWh of {inp.pool.absorption_limit_kwh} kWh "
+            f"({utilization_pct}% utilised); community consuming {inp.pool.current_consumption_kwh} kWh. "
+            f"Context: {fleet_note}. "
+            f"A deterministic rules estimator suggests direction '{baseline.direction}', "
+            f"base price ${baseline.recommended_price:.4f}/kWh, "
+            f"absorb {baseline.recommended_absorption_kwh} kWh. "
+            f"Use this as your anchor: pick the same direction unless clearly wrong, and keep the "
+            f"price within roughly 20% of the anchor. Do NOT apply any grid scarcity adjustment "
+            f"yourself — that is handled separately. Output the BASE price before any grid adjustment. "
+            f"Direction is one of 'local_pool', 'import', or 'export'. "
             f"Respond with only a JSON object: "
             f'{{"direction": "<str>", "recommended_price": <float>, "recommended_absorption_kwh": <float>}}'
         )
@@ -130,7 +151,8 @@ async def recommend(inp: RecommendationInput) -> RecommendationResult:
         import json
 
         data = json.loads(response.choices[0].message.content)
-        # Same fleet feed-in as the rules path — applied to the model's price.
+        # Same fleet feed-in as the rules path — the single, deterministic grid
+        # adjustment, applied once to the model's base price.
         price = float(data["recommended_price"]) * _fleet_price_factor(inp.fleet)
         return RecommendationResult(
             recommended_price=round(price, 6),

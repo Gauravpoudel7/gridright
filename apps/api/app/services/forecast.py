@@ -19,13 +19,25 @@ from typing import Any
 
 from app.services.weather import RegionCachedWeather, get_provider
 
-# PLACEHOLDER model parameters — tune against real accuracy history later.
+# PLACEHOLDER model parameters — the starting point / cold-start defaults.
+# Once a seller has scored forecast history these are refined per-seller by
+# learn_seller_params() below (the accuracy loop, previously collected but
+# never fed back).
 FORECAST_HORIZON_HOURS = 24          # how far ahead each run predicts
 HISTORY_DAYS = 14                    # how much meter history informs the hourly profile
-CLOUD_ATTENUATION = 0.6              # fraction of generation lost at 100% cloud cover
+CLOUD_ATTENUATION = 0.6              # default fraction of generation lost at 100% cloud
 MIN_HISTORY_READINGS = 4             # below this, confidence bottoms out
 BASE_CONFIDENCE = 0.8                # confidence with solid history, clear model
 LOW_HISTORY_CONFIDENCE = 0.3
+
+# Per-seller learning (closes the accuracy loop).
+RECENT_FORECASTS_FOR_LEARNING = 200  # how many recent scored forecasts to learn from
+MIN_SAMPLES_FOR_LEARNING = 5         # need this many scored points before overriding defaults
+LEARNED_ATTENUATION_MIN = 0.2        # clamp learned cloud response to a sane range
+LEARNED_ATTENUATION_MAX = 0.9
+MIN_HISTORY_FOR_CLOUD_FIT = 0.5      # kWh — ignore near-zero baselines (division noise)
+MIN_CLOUD_FOR_FIT = 10.0             # % — ignore near-clear samples (division noise)
+BIAS_DAMPING = 0.5                   # apply only half the observed bias (avoid oscillation)
 
 
 class ForecastStore(ABC):
@@ -170,22 +182,72 @@ def build_hourly_profile(readings: list[dict[str, Any]]) -> dict[int, float]:
 
 
 def predict_hour(
-    historical_avg_kwh: float, cloud_cover_pct: float
+    historical_avg_kwh: float,
+    cloud_cover_pct: float,
+    attenuation_coeff: float = CLOUD_ATTENUATION,
+    bias_correction_kwh: float = 0.0,
 ) -> tuple[float, dict[str, Any]]:
-    """One forecast hour: historical average attenuated by cloud cover.
+    """One forecast hour: historical average attenuated by cloud cover, then
+    corrected for this seller's observed forecast bias.
 
-    Returns (predicted_kwh, factors). Factors are always populated — the
-    stored row must explain itself.
+    attenuation_coeff and bias_correction_kwh default to the cold-start values
+    (0.6 and 0.0), so callers without learned history get the original model.
+    Returns (predicted_kwh, factors). Factors always explain the row, now
+    including the learned coefficients that produced it.
     """
-    attenuation = 1 - CLOUD_ATTENUATION * (cloud_cover_pct / 100)
-    predicted = max(0.0, round(historical_avg_kwh * attenuation, 4))
+    retained = 1 - attenuation_coeff * (cloud_cover_pct / 100)
+    predicted = max(0.0, round(historical_avg_kwh * retained - bias_correction_kwh, 4))
     factors = {
         "historical_avg_kwh": round(historical_avg_kwh, 4),
         "cloud_cover_pct": cloud_cover_pct,
-        "cloud_attenuation_applied": round(1 - attenuation, 4),
+        "cloud_attenuation_coeff": round(attenuation_coeff, 4),
+        "cloud_attenuation_applied": round(1 - retained, 4),
+        "bias_correction_kwh": round(bias_correction_kwh, 4),
         "model": "hourly_avg_x_cloud",
     }
     return predicted, factors
+
+
+def learn_seller_params(recent_forecasts: list[dict[str, Any]]) -> tuple[float, float]:
+    """Learn (cloud_attenuation_coeff, bias_correction_kwh) for one seller from
+    their own scored forecasts — the accuracy data the system already stores
+    but never used.
+
+    Cloud response: each scored forecast recorded historical_avg_kwh and
+    cloud_cover_pct (in factors) and, once readings landed, the actual surplus.
+    Since actual ≈ historical * (1 - k * cloud/100), we back out
+    k = (1 - actual/historical) * 100/cloud per usable sample and average them.
+    Bias: the mean signed accuracy_delta_kwh (predicted - actual); a persistent
+    over-prediction is subtracted back off (damped, to avoid oscillation).
+
+    Both fall back to the cold-start defaults until MIN_SAMPLES_FOR_LEARNING
+    usable points exist, and the attenuation is clamped to a sane band.
+    """
+    ks: list[float] = []
+    deltas: list[float] = []
+    for f in recent_forecasts:
+        delta = f.get("accuracy_delta_kwh")
+        actual = f.get("actual_surplus_kwh")
+        if delta is None or actual is None:
+            continue  # only scored forecasts carry signal
+        deltas.append(float(delta))
+        factors = f.get("factors") or {}
+        hist = float(factors.get("historical_avg_kwh", 0.0))
+        cloud = float(factors.get("cloud_cover_pct", 0.0))
+        if hist >= MIN_HISTORY_FOR_CLOUD_FIT and cloud >= MIN_CLOUD_FOR_FIT and actual >= 0:
+            ks.append((1 - float(actual) / hist) * 100.0 / cloud)
+
+    attenuation = CLOUD_ATTENUATION
+    if len(ks) >= MIN_SAMPLES_FOR_LEARNING:
+        attenuation = min(
+            LEARNED_ATTENUATION_MAX, max(LEARNED_ATTENUATION_MIN, sum(ks) / len(ks))
+        )
+
+    bias = 0.0
+    if len(deltas) >= MIN_SAMPLES_FOR_LEARNING:
+        bias = round(BIAS_DAMPING * (sum(deltas) / len(deltas)), 4)
+
+    return attenuation, bias
 
 
 async def run_forecast_job(now: datetime | None = None) -> dict[str, int]:
@@ -210,6 +272,13 @@ async def run_forecast_job(now: datetime | None = None) -> dict[str, int]:
             BASE_CONFIDENCE if len(readings) >= MIN_HISTORY_READINGS else LOW_HISTORY_CONFIDENCE
         )
 
+        # Close the accuracy loop: refine cloud response + bias from this
+        # seller's own scored history. Defaults (0.6, 0.0) until enough exists.
+        recent = await store.get_recent_forecasts(
+            seller["id"], RECENT_FORECASTS_FOR_LEARNING
+        )
+        attenuation_coeff, bias = learn_seller_params(recent)
+
         forecast = await weather.get_forecast(
             float(seller["latitude"]), float(seller["longitude"]), FORECAST_HORIZON_HOURS
         )
@@ -218,7 +287,9 @@ async def run_forecast_job(now: datetime | None = None) -> dict[str, int]:
         for hw in forecast.hours:
             target = start + timedelta(hours=hw.hour_offset)
             historical_avg = profile.get(target.hour, 0.0)
-            predicted, factors = predict_hour(historical_avg, hw.cloud_cover_pct)
+            predicted, factors = predict_hour(
+                historical_avg, hw.cloud_cover_pct, attenuation_coeff, bias
+            )
             factors["history_readings_used"] = len(readings)
             rows.append(
                 {

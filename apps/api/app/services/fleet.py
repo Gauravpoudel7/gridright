@@ -186,7 +186,7 @@ async def _outlook_summary(
             f"Be concrete and actionable; no preamble."
         )
         resp = await client.chat.completions.create(
-            model=os.getenv("GROQ_MODEL", "mixtral-8x7b-32768"),
+            model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
         )
@@ -251,7 +251,9 @@ async def get_fleet_outlook(now: datetime | None = None) -> FleetOutlook:
     rows = await store.get_forecasts_in_window(start, end)
     accuracy_rows = await store.get_recent_accuracy()
 
-    hourly = aggregate_hourly(rows, get_demand_signal())
+    signal = get_demand_signal()
+    await signal.refresh(now=now)  # no-op for the heuristic; loads history for LearnedDemand
+    hourly = aggregate_hourly(rows, signal)
     per_seller = aggregate_per_seller(rows)
     drift_flags = compute_drift_flags(accuracy_rows)
 
@@ -284,5 +286,7 @@ async def get_net_position_kwh(now: datetime | None = None) -> float | None:
     rows = await _get_store().get_forecasts_in_window(start, end)
     if not rows:
         return None
-    hourly = aggregate_hourly(rows, get_demand_signal())
+    signal = get_demand_signal()
+    await signal.refresh(now=now)
+    hourly = aggregate_hourly(rows, signal)
     return round(sum(h.net_position_kwh for h in hourly), 4)

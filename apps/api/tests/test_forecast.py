@@ -11,10 +11,12 @@ import pytest
 
 from app.services import forecast, weather
 from app.services.forecast import (
+    CLOUD_ATTENUATION,
     ForecastStore,
     FORECAST_HORIZON_HOURS,
     build_hourly_profile,
     compute_accuracy,
+    learn_seller_params,
     predict_hour,
     run_forecast_job,
 )
@@ -197,6 +199,77 @@ async def test_accuracy_skips_hours_without_readings(stores):
     # pending but NOT computed — never scored against zero
     assert result == {"pending": 1, "computed": 0}
     assert store.accuracy_updates == []
+
+
+def _scored(historical, cloud, actual, predicted):
+    """A scored forecast row as get_recent_forecasts would return it."""
+    return {
+        "predicted_surplus_kwh": predicted,
+        "actual_surplus_kwh": actual,
+        "accuracy_delta_kwh": round(predicted - actual, 4),
+        "factors": {"historical_avg_kwh": historical, "cloud_cover_pct": cloud},
+    }
+
+
+def test_learn_params_cold_start_returns_defaults():
+    # No scored history → the original model (default attenuation, no bias).
+    assert learn_seller_params([]) == (CLOUD_ATTENUATION, 0.0)
+    # Fewer than MIN_SAMPLES_FOR_LEARNING usable points → still defaults.
+    assert learn_seller_params([_scored(4.0, 50.0, 2.8, 2.8)]) == (CLOUD_ATTENUATION, 0.0)
+
+
+def test_learn_params_recovers_attenuation_and_bias():
+    # Build 6 samples where actual = historical*(1 - 0.4*cloud/100), i.e. this
+    # seller's true cloud response is 0.4 (clearer panels than the 0.6 default),
+    # and each forecast over-predicted by 0.6 kWh (a positive, correctable bias).
+    rows = []
+    for _ in range(6):
+        actual = 4.0 * (1 - 0.4 * 50.0 / 100)     # 3.2
+        predicted = actual + 0.6                   # delta = +0.6
+        rows.append(_scored(4.0, 50.0, actual, predicted))
+    attenuation, bias = learn_seller_params(rows)
+    assert attenuation == pytest.approx(0.4, abs=1e-6)
+    assert bias == pytest.approx(0.3)  # BIAS_DAMPING (0.5) * mean delta (0.6)
+
+
+def test_learn_params_clamps_extreme_attenuation():
+    # actual far below historical → implied k > 1, must clamp to the max band.
+    rows = [_scored(4.0, 50.0, 0.1, 2.0) for _ in range(6)]
+    attenuation, _ = learn_seller_params(rows)
+    assert attenuation <= 0.9
+
+
+def test_predict_hour_applies_learned_params():
+    # historical 4.0, 50% cloud, learned attenuation 0.4, bias 0.3:
+    # 4.0 * (1 - 0.4*0.5) - 0.3 = 4.0*0.8 - 0.3 = 2.9
+    predicted, factors = predict_hour(4.0, 50.0, 0.4, 0.3)
+    assert predicted == pytest.approx(2.9)
+    assert factors["cloud_attenuation_coeff"] == pytest.approx(0.4)
+    assert factors["bias_correction_kwh"] == pytest.approx(0.3)
+
+
+@pytest.mark.asyncio
+async def test_run_forecast_job_uses_learned_params(stores):
+    store, _ = stores
+    store.sellers = [{"id": "seller-1", "latitude": 12.9, "longitude": 77.6}]
+    seed_history(store, "seller-1", daily_noon_surplus=4.0)
+    # Pre-load scored history implying a 0.4 cloud response (not the 0.6 default).
+    for i in range(6):
+        store.forecasts.append(
+            {
+                "id": f"scored-{i}",
+                "seller_id": "seller-1",
+                "forecast_for": (NOW - timedelta(days=1, hours=i)).isoformat(),
+                "accuracy_computed_at": NOW.isoformat(),
+                **_scored(4.0, 50.0, 3.2, 3.2),
+            }
+        )
+
+    await run_forecast_job(now=NOW)
+
+    fresh = [f for f in store.forecasts if f["id"].startswith("fc-")]
+    assert fresh, "run should have produced new forecasts"
+    assert all(f["factors"]["cloud_attenuation_coeff"] == pytest.approx(0.4) for f in fresh)
 
 
 @pytest.mark.asyncio
