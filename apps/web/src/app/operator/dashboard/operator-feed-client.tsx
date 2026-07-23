@@ -134,7 +134,7 @@ export function OperatorFeedClient({
         {feed.length === 0 ? (
           <p className="text-sm text-zinc-500">No recommendations yet.</p>
         ) : (
-          <ul className="flex flex-col gap-3">
+          <ul className="flex max-h-[32rem] flex-col gap-3 overflow-y-auto pr-1">
             {feed.map((item) => (
               <li key={item.id} className="border-b border-zinc-100 pb-3 last:border-0 last:pb-0 dark:border-zinc-800/50">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-zinc-900 dark:text-zinc-50">
