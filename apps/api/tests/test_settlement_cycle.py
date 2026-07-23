@@ -79,7 +79,8 @@ class DictSettlementStore(SettlementStore):
     async def create_item(self, item):
         iid = self._id("i")
         self.items[iid] = {**item, "id": iid, "paid": False,
-                           "tx_signature": None, "paid_at": None}
+                           "tx_signature": None, "paid_at": None,
+                           "paid_method": None}
         return iid
 
     async def get_eligible_contributions(self):
@@ -113,9 +114,10 @@ class DictSettlementStore(SettlementStore):
         row = self.items.get(item_id)
         return dict(row) if row else None
 
-    async def mark_item_paid(self, item_id, tx_signature, paid_at):
+    async def mark_item_paid(self, item_id, tx_signature, paid_at, paid_method="manual"):
         self.items[item_id].update(
-            paid=True, tx_signature=tx_signature, paid_at=paid_at
+            paid=True, tx_signature=tx_signature, paid_at=paid_at,
+            paid_method=paid_method,
         )
         for row in self.contributions.values():
             if row["settlement_item_id"] == item_id:
@@ -336,3 +338,48 @@ def test_endpoints_run_and_record(client, store):
     )
     assert paid.status_code == 200
     assert paid.json()["batch_completed"] is True
+
+
+# -- deploy-skew guard --------------------------------------------------------
+
+class _SkewTable:
+    """Stub Supabase table: UPDATEs touching paid_method raise like PostgREST
+    does when the 20250723000016_autopay migration hasn't been applied yet."""
+
+    def __init__(self, log):
+        self._log = log
+        self._payload = None
+
+    def update(self, payload):
+        self._payload = payload
+        return self
+
+    def eq(self, *_):
+        return self
+
+    def execute(self):
+        if self._payload and "paid_method" in self._payload:
+            raise RuntimeError(
+                "Could not find the 'paid_method' column of 'settlement_items'"
+            )
+        self._log.append(self._payload)
+        return self
+
+
+def test_mark_item_paid_survives_missing_paid_method_column():
+    """API deployed before the autopay migration: the paid_method stamp fails,
+    but the payment itself must still be recorded (retry without the column)."""
+    from app.services.settlement_cycle import SupabaseSettlementStore
+    import asyncio
+
+    store = SupabaseSettlementStore.__new__(SupabaseSettlementStore)  # skip __init__
+    writes: list[dict] = []
+    store._client = type("C", (), {"table": lambda self, name: _SkewTable(writes)})()
+
+    asyncio.run(store.mark_item_paid("item-1", "tx-sig", "2026-07-23T00:00:00Z", "auto"))
+
+    # Two successful writes: the degraded item update + the contributions stamp.
+    item_write = writes[0]
+    assert item_write["paid"] is True
+    assert item_write["tx_signature"] == "tx-sig"
+    assert "paid_method" not in item_write

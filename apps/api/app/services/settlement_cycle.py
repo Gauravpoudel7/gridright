@@ -96,9 +96,10 @@ class SettlementStore(ABC):
 
     @abstractmethod
     async def mark_item_paid(
-        self, item_id: str, tx_signature: str, paid_at: str
+        self, item_id: str, tx_signature: str, paid_at: str, paid_method: str = "manual"
     ) -> None:
-        """Mark the item paid AND stamp tx_signature on its contributions."""
+        """Mark the item paid AND stamp tx_signature on its contributions.
+        paid_method: 'manual' (operator via dashboard) or 'auto' (auto-pay job)."""
 
 
 class SupabaseSettlementStore(SettlementStore):
@@ -223,11 +224,27 @@ class SupabaseSettlementStore(SettlementStore):
         return res.data[0] if res.data else None
 
     async def mark_item_paid(
-        self, item_id: str, tx_signature: str, paid_at: str
+        self, item_id: str, tx_signature: str, paid_at: str, paid_method: str = "manual"
     ) -> None:
-        self._client.table("settlement_items").update(
-            {"paid": True, "tx_signature": tx_signature, "paid_at": paid_at}
-        ).eq("id", item_id).execute()
+        try:
+            self._client.table("settlement_items").update(
+                {
+                    "paid": True,
+                    "tx_signature": tx_signature,
+                    "paid_at": paid_at,
+                    "paid_method": paid_method,
+                }
+            ).eq("id", item_id).execute()
+        except Exception as e:
+            # Deploy-skew guard: if this API version reaches production before
+            # the 20250723000016_autopay migration (paid_method column), the
+            # audit stamp must not take the whole payment path down with it.
+            # Retry without the column; anything else propagates as before.
+            if "paid_method" not in str(e):
+                raise
+            self._client.table("settlement_items").update(
+                {"paid": True, "tx_signature": tx_signature, "paid_at": paid_at}
+            ).eq("id", item_id).execute()
         self._client.table("contributions").update(
             {"tx_signature": tx_signature}
         ).eq("settlement_item_id", item_id).execute()
@@ -383,15 +400,19 @@ async def get_due_settlements() -> dict[str, Any]:
                 "escalated": bool(i.get("escalated")),
                 "paid": bool(i.get("paid")),
                 "tx_signature": i.get("tx_signature"),
+                "paid_method": i.get("paid_method"),
             }
             for i in items
         ],
     }
 
 
-async def record_item_paid(item_id: str, tx_signature: str) -> dict[str, Any]:
-    """Record the operator's on-chain payment for one payout line. When the
-    last unpaid item in the batch is recorded, the batch completes."""
+async def record_item_paid(
+    item_id: str, tx_signature: str, paid_method: str = "manual"
+) -> dict[str, Any]:
+    """Record an on-chain payment for one payout line — the operator's manual
+    Phantom payment ('manual') or the auto-pay job's transfer ('auto'). When
+    the last unpaid item in the batch is recorded, the batch completes."""
     if not tx_signature or not tx_signature.strip():
         raise SettlementCycleError(422, "tx_signature is required")
 
@@ -403,7 +424,7 @@ async def record_item_paid(item_id: str, tx_signature: str) -> dict[str, Any]:
         raise SettlementCycleError(409, "Settlement item is already paid")
 
     now_iso = _now().isoformat()
-    await store.mark_item_paid(item_id, tx_signature.strip(), now_iso)
+    await store.mark_item_paid(item_id, tx_signature.strip(), now_iso, paid_method)
 
     batch_id = item["batch_id"]
     remaining = [

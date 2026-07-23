@@ -29,3 +29,15 @@ services:
         sync: false # optional preview pattern, e.g. https://gridright-.*\.vercel\.app
       # Optional — only needed if badges / on-chain commits / Groq are enabled:
       # BADGE_TREE_ADDRESS, COMMIT_AUTHORITY_PUBKEY, GROQ_API_KEY
+      #
+      # AI signals (optional):
+      # - DEMAND_SIGNAL=learned  → demand curve learned from meter history
+      #   (default time-of-day heuristic; learned falls back to it cold-start)
+      # - GROQ_MODEL             → override the default Groq model
+      #
+      # Auto-pay is OFF by default (AUTOPAY_ENABLED=1 to enable) and CANNOT be
+      # enabled on this service as-is: the default payer shells out to
+      # npx tsx programs/gridright/scripts/pay-settlement.ts, but this Python
+      # runtime has no Node and rootDir=apps/api excludes programs/. Leave it
+      # off here, or run the payer from a host that has Node + a funded
+      # SOLANA_WALLET keypair file.

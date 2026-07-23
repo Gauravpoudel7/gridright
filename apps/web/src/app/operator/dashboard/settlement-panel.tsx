@@ -24,6 +24,8 @@ export type SettlementItem = {
   escalated: boolean;
   paid: boolean;
   tx_signature: string | null;
+  /** "manual" (operator via Phantom) or "auto" (server auto-pay); null if unpaid. */
+  paid_method?: "manual" | "auto" | null;
 };
 
 export type SettlementBatch = {
@@ -202,7 +204,7 @@ export function SettlementPanel({
                   )}
                   {item.paid ? (
                     <span className="rounded bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400">
-                      paid
+                      {item.paid_method === "auto" ? "paid · auto" : "paid"}
                     </span>
                   ) : (
                     <button

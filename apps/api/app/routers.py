@@ -63,6 +63,7 @@ from app.services import wallet_activation as wallet_activation_service
 from app.services import password_gate as password_gate_service
 from app.services import settlement_cycle as settlement_cycle_service
 from app.services import meter_aggregation as meter_aggregation_service
+from app.services import autopay as autopay_service
 
 router = APIRouter(prefix="/api/v1")
 
@@ -844,7 +845,17 @@ async def run_settlements(
         logger.exception("Meter aggregation sweep failed")
         aggregation = {"error": "aggregation_failed"}
     cycle = await settlement_cycle_service.run_settlement_cycle()
-    return {**cycle, "meter_aggregation": aggregation}
+
+    # Auto-pay (opt-in via AUTOPAY_ENABLED): settle small, non-escalated lines
+    # of the batch just created; big/escalated lines stay for manual payment.
+    # Best-effort — an auto-pay failure must never fail the cycle itself.
+    try:
+        autopay = await autopay_service.run_autopay()
+    except Exception:
+        logger.exception("Auto-pay run failed")
+        autopay = {"error": "autopay_failed"}
+
+    return {**cycle, "meter_aggregation": aggregation, "autopay": autopay}
 
 
 @router.get("/operator/settlements")
